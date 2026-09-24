@@ -12,13 +12,19 @@ warn() { say "${Y}NOTE${N} $1"; }
 die() { say "${R}FAIL${N} $1"; say ""; say "Nothing is broken by stopping here. Fix the line above, then paste the install line again."; say "If unsure, copy this whole window and send it to Johnny/Clause."; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+main() {
 say "=== BrettVision install $(date '+%Y-%m-%d %H:%M') ==="
 
 # 1. platform
 if [ -z "${BV_TEST:-}" ]; then
   [ "$(uname -s)" = "Darwin" ] || die "This installer is for a Mac."
   ver="$(sw_vers -productVersion)"; major="${ver%%.*}"
-  [ "$major" -ge 12 ] 2>/dev/null || die "macOS $ver is too old (need 12 Monterey or newer). Update via System Settings > Software Update."
+  [ "$major" -ge 14 ] 2>/dev/null || die "macOS $ver is too old for the tools we install (need 14 Sonoma or newer; 15 Sequoia is best). Apple menu > System Settings > General > Software Update, install the newest macOS, then paste the install line again."
+  [ "$major" -ge 15 ] || warn "macOS $ver works but Homebrew only officially supports 15+. If a step fails, updating macOS is the first fix."
+  [ "$(uname -m)" = "arm64" ] || warn "Intel Mac: supported but less tested."
+  freek="$(df -k "$HOME" | awk 'NR==2{print $4}')"
+  [ "${freek:-0}" -ge 5000000 ] || die "Only $((freek/1024/1024)) GB free on this Mac; need 5 GB. Empty the Trash / delete old downloads, then paste the install line again."
+  curl -fsS --max-time 15 -o /dev/null https://github.com || die "No internet (couldn't reach github.com). Check Wi-Fi, then paste the install line again."
   ok "macOS $ver ($(uname -m))"
 else
   warn "BV_TEST set: skipping Mac checks"
@@ -33,10 +39,14 @@ fi
 
 # 3. Xcode command-line tools (git, compilers). Dialog appears; click Install.
 if [ -z "${BV_SKIP_BREW:-}" ]; then
-  if ! xcode-select -p >/dev/null 2>&1; then
-    say "A window is asking to install the developer tools. Click Install and wait (5-15 min)."
+  if ! /usr/bin/git --version >/dev/null 2>&1; then
+    say "A window is asking to install the developer tools. Click Install, then Agree, and wait (5-20 min). Do not close this window."
     xcode-select --install >/dev/null 2>&1
-    until xcode-select -p >/dev/null 2>&1; do sleep 10; done
+    waited=0
+    until /usr/bin/git --version >/dev/null 2>&1; do
+      sleep 10; waited=$((waited+10))
+      [ "$waited" -lt 2400 ] || die "Developer tools never finished installing. If you clicked Cancel, paste the install line again and click Install this time."
+    done
   fi
   ok "developer tools"
 
@@ -61,7 +71,7 @@ fi
 # 6. the BrettVision code (public field bundle: capture + detection only, no personal data)
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 say "Downloading BrettVision..."
-curl -fsSL "$BV_BUNDLE_URL" -o "$tmp/b.tgz" || die "Download failed ($BV_BUNDLE_URL). Check the internet connection."
+curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused "$BV_BUNDLE_URL" -o "$tmp/b.tgz" || die "Download failed ($BV_BUNDLE_URL). Check the internet connection."
 mkdir -p "$BV_HOME"
 tar -xzf "$tmp/b.tgz" -C "$BV_HOME" || die "Bundle is corrupt; re-run."
 ok "code in $BV_HOME"
@@ -80,14 +90,14 @@ if [ -z "${BV_SKIP_TAILSCALE:-}" ]; then
   sleep 3
   if ! tailscale status >/dev/null 2>&1; then
     say ""; say ">>> Open the link below in a browser and sign in to Tailscale (same account as your phone):"
-    tailscale up --ssh --hostname=brettvision-mac 2>&1 | head -6 &
+    sudo tailscale up --ssh --hostname=brettvision-mac --operator="$USER" 2>&1 | head -6 &
     for _ in $(seq 1 60); do tailscale status >/dev/null 2>&1 && break; sleep 3; done
   fi
   if tailscale status >/dev/null 2>&1; then ok "Tailscale $(tailscale ip -4 2>/dev/null | head -1)"; else warn "Tailscale not signed in yet; double-click Start BrettVision later to retry."; fi
   # belt and braces: normal ssh with Clause's public key
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$HOME/.ssh/authorized_keys"; chmod 600 "$HOME/.ssh/authorized_keys"
   key="$(cat "$BV_HOME/mac/vps_key.pub")"; grep -qF "$key" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$key" >> "$HOME/.ssh/authorized_keys"
-  sudo systemsetup -setremotelogin on >/dev/null 2>&1 || warn "Remote Login not enabled (Tailscale SSH still works)."
+  sudo systemsetup -setremotelogin on >/dev/null 2>&1 || sudo launchctl enable system/com.openssh.sshd >/dev/null 2>&1 || warn "Remote Login not enabled (Tailscale SSH still works; optional: System Settings > General > Sharing > Remote Login on)."
 fi
 
 # 9. power: no sleep on AC
@@ -105,7 +115,11 @@ fi
 
 # 11. the double-click launcher (written locally by curl's shell => no Gatekeeper quarantine)
 desk="$HOME/Desktop"; [ -d "$desk" ] || desk="$BV_HOME"
-cp "$BV_HOME/mac/Start BrettVision.command" "$desk/Start BrettVision.command"
+if ! cp "$BV_HOME/mac/Start BrettVision.command" "$desk/Start BrettVision.command" 2>/dev/null; then
+  warn "macOS blocked writing to the Desktop (you clicked Don't Allow). Launcher placed in $BV_HOME instead; opening that folder."
+  desk="$BV_HOME"; cp "$BV_HOME/mac/Start BrettVision.command" "$desk/Start BrettVision.command"
+  have open && open "$BV_HOME" 2>/dev/null
+fi
 chmod +x "$desk/Start BrettVision.command"; xattr -d com.apple.quarantine "$desk/Start BrettVision.command" 2>/dev/null || true
 ok "launcher: $desk/Start BrettVision.command"
 
@@ -119,3 +133,5 @@ if [ -e "$BV_HOME/data/clause-connected" ]; then
   say "${G}Clause is connected.${N}"
 fi
 say "${G}DONE.${N} Next: double-click \"Start BrettVision\" on the Desktop."
+}
+main "$@" </dev/null
