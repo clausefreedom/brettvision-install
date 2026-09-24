@@ -1,0 +1,34 @@
+name: mac-install
+on: [workflow_dispatch]
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install (real brew/uv/claude; Tailscale login skipped)
+        env:
+          BV_SKIP_TAILSCALE: "1"
+          BV_SKIP_WAIT: "1"
+          BV_BUNDLE_URL: https://github.com/clausefreedom/brettvision-install/releases/latest/download/brettvision-field.tar.gz
+        run: |
+          sw_vers; uname -m
+          bash install.sh
+          bash install.sh | tail -4   # idempotent
+      - name: Tailscale formula exists and installs
+        run: brew install tailscale && tailscale version
+      - name: Launcher, no radar
+        run: |
+          BV_NO_CLAUDE=1 BV_NO_CAFFEINATE=1 BV_NO_TAILSCALE=1 bash "$HOME/Desktop/Start BrettVision.command" | tee nr.txt
+          grep -q "SELF-TEST PASSED" nr.txt
+      - name: Launcher, fake radar, recording produced
+        run: |
+          "$HOME/brettvision/.venv/bin/python" "$HOME/brettvision/mac/fake_x4.py" /tmp/ttyACMFAKE & sleep 2
+          BRETTVISION_X4_GLOB=/tmp/ttyACMFAKE BV_NO_CLAUDE=1 BV_NO_CAFFEINATE=1 BV_NO_TAILSCALE=1 bash "$HOME/Desktop/Start BrettVision.command" | tee r.txt
+          grep -q "PASS  live" r.txt
+          f=$(ls $HOME/brettvision/data/recordings/*.jsonl | head -1); test -s "$f"; wc -l "$f"
+          python3 -c "import json,sys; [json.loads(l) for l in open('$f')]; print('recording parses')"
