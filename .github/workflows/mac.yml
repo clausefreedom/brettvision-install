@@ -5,7 +5,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-13]
+        os: [macos-14, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -21,6 +21,12 @@ jobs:
           bash install.sh | tail -4   # idempotent
       - name: Tailscale formula exists and installs
         run: brew install tailscale && tailscale version
+      - name: Tailscale daemon + Remote Login probes (informational)
+        continue-on-error: true
+        run: |
+          sudo brew services start tailscale; sleep 5
+          tailscale status; echo "tailscale status rc=$?"
+          sudo systemsetup -setremotelogin on; echo "remotelogin rc=$?"
       - name: Launcher, no radar
         run: |
           BV_NO_CLAUDE=1 BV_NO_CAFFEINATE=1 BV_NO_TAILSCALE=1 bash "$HOME/Desktop/Start BrettVision.command" | tee nr.txt
